@@ -3,6 +3,7 @@ export type RealtimeEvent =
   | { kind: 'delta'; itemId: string; text: string }
   | { kind: 'completed'; itemId: string; text: string }
   | { kind: 'level'; value: number }
+  | { kind: 'diagnostic'; text: string }
   | { kind: 'error'; text: string };
 
 interface ActiveCapture {
@@ -15,6 +16,7 @@ interface ActiveCapture {
   uploadQueue: Promise<void>;
   token: string;
   onEvent: (event: RealtimeEvent) => void;
+  segmentNumber: number;
 }
 
 let active: ActiveCapture | null = null;
@@ -48,8 +50,10 @@ async function createMeter(stream: MediaStream, onEvent: (event: RealtimeEvent) 
   }
 }
 
-async function transcribeSegment(capture: ActiveCapture, blob: Blob) {
-  if (blob.size < 1_000 || capture.controller.signal.aborted) return;
+async function transcribeSegment(capture: ActiveCapture, blob: Blob, segmentNumber: number) {
+  if (capture.controller.signal.aborted) return;
+  if (blob.size < 1_000) throw new Error(`The microphone produced an empty audio segment (${blob.size} bytes).`);
+  capture.onEvent({ kind: 'diagnostic', text: `Transcribing segment ${segmentNumber} (${Math.ceil(blob.size / 1024)} KB)…` });
   const response = await fetch('/api/transcribe-segment', {
     method: 'POST',
     headers: { 'Content-Type': blob.type || 'application/octet-stream', Authorization: `Bearer ${capture.token}` },
@@ -59,11 +63,18 @@ async function transcribeSegment(capture: ActiveCapture, blob: Blob) {
   const result = await response.json();
   if (!response.ok) throw new Error(result.error || 'The microphone segment could not be transcribed.');
   const text = typeof result.text === 'string' ? result.text.trim() : '';
-  if (text && active === capture) capture.onEvent({ kind: 'completed', itemId: `segment-${Date.now()}`, text });
+  if (active !== capture) return;
+  if (text) {
+    capture.onEvent({ kind: 'diagnostic', text: `Words received from segment ${segmentNumber}` });
+    capture.onEvent({ kind: 'completed', itemId: `segment-${Date.now()}`, text });
+  } else {
+    capture.onEvent({ kind: 'diagnostic', text: `No speech found in segment ${segmentNumber}` });
+  }
 }
 
 function startSegment(capture: ActiveCapture) {
   if (active !== capture || capture.controller.signal.aborted) return;
+  const segmentNumber = ++capture.segmentNumber;
   const chunks: Blob[] = [];
   const mimeType = preferredMimeType();
   const recorder = new MediaRecorder(capture.stream, mimeType ? { mimeType } : undefined);
@@ -79,15 +90,23 @@ function startSegment(capture: ActiveCapture) {
     window.clearTimeout(capture.segmentTimer);
     if (active !== capture || capture.controller.signal.aborted) return;
     const blob = new Blob(chunks, { type: recorder.mimeType || mimeType || 'application/octet-stream' });
+    capture.onEvent({ kind: 'diagnostic', text: `Segment ${segmentNumber} captured (${Math.ceil(blob.size / 1024)} KB)` });
     capture.uploadQueue = capture.uploadQueue
-      .then(() => transcribeSegment(capture, blob))
+      .then(() => transcribeSegment(capture, blob, segmentNumber))
       .catch(error => {
         if (capture.controller.signal.aborted || active !== capture) return;
         capture.onEvent({ kind: 'error', text: error instanceof Error ? error.message : 'Audio transcription failed.' });
       });
-    startSegment(capture);
+    window.setTimeout(() => {
+      try { startSegment(capture); }
+      catch (error) {
+        if (active !== capture) return;
+        capture.onEvent({ kind: 'error', text: error instanceof Error ? error.message : 'The next microphone segment could not start.' });
+      }
+    }, 0);
   });
   recorder.start();
+  capture.onEvent({ kind: 'diagnostic', text: `Recording segment ${segmentNumber}…` });
   capture.segmentTimer = window.setTimeout(() => {
     if (recorder.state === 'recording') recorder.stop();
   }, 4_000);
@@ -97,10 +116,7 @@ export async function startRoomCapture(onEvent: (event: RealtimeEvent) => void, 
   if (active) return;
   if (typeof MediaRecorder === 'undefined') throw new Error('This browser does not support microphone transcription.');
   onEvent({ kind: 'status', status: 'connecting' });
-  const stream = await navigator.mediaDevices.getUserMedia({
-    audio: { echoCancellation: false, noiseSuppression: false, autoGainControl: true, channelCount: 1 },
-    video: false
-  });
+  const stream = await navigator.mediaDevices.getUserMedia({ audio: true, video: false });
   const track = stream.getAudioTracks()[0];
   if (!track) {
     stream.getTracks().forEach(item => item.stop());
@@ -109,7 +125,7 @@ export async function startRoomCapture(onEvent: (event: RealtimeEvent) => void, 
   const meter = await createMeter(stream, onEvent);
   const capture: ActiveCapture = {
     stream, recorder: null, meterContext: meter.context, meterTimer: meter.timer, segmentTimer: 0,
-    controller: new AbortController(), uploadQueue: Promise.resolve(), token, onEvent
+    controller: new AbortController(), uploadQueue: Promise.resolve(), token, onEvent, segmentNumber: 0
   };
   active = capture;
   track.addEventListener('ended', () => {

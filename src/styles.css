@@ -63,6 +63,7 @@ button:disabled { cursor: not-allowed; opacity: .5; }
 .source-notice .source-copy { display: flex; flex: 1; min-width: 0; flex-direction: column; }
 .source-notice strong { font-size: 11px; }
 .source-notice span { font-size: 10px; color: #64766f; }
+.source-notice .capture-detail { margin-top: 5px; color: #1c6753; font-size: 9px; font-weight: 700; }
 .mic-signal { display: flex; flex: 0 0 auto; height: 29px; align-items: flex-end; gap: 3px; color: #28735d; }
 .mic-signal i { width: 3px; height: 18px; border-radius: 3px; background: #3a8b72; transform-origin: bottom; transition: transform 100ms ease-out; }
 .mic-signal small { align-self: center; margin-left: 4px; color: #397361; font-size: 8px; font-weight: 700; white-space: nowrap; }

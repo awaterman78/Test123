@@ -34,6 +34,7 @@ export default function App() {
   const [consent, setConsent] = useState(false);
   const [consentPromptOpen, setConsentPromptOpen] = useState(false);
   const [micLevel, setMicLevel] = useState(0);
+  const [captureDetail, setCaptureDetail] = useState('');
   const [configured, setConfigured] = useState(false);
   const [authRequired, setAuthRequired] = useState(false);
   const [sessionToken, setSessionToken] = useState(() => sessionStorage.getItem('livecue-session') || '');
@@ -77,6 +78,7 @@ export default function App() {
       }
       return;
     }
+    if (event.kind === 'diagnostic') return setCaptureDetail(event.text);
     if (event.kind === 'level') return setMicLevel(event.value);
     if (event.kind === 'delta') {
       partials.current[event.itemId] = (partials.current[event.itemId] ?? '') + event.text;
@@ -94,7 +96,7 @@ export default function App() {
   }, [sensitivity]);
 
   const beginCapture = useCallback(async () => {
-    setError('');
+    setError(''); setCaptureDetail('Requesting microphone…');
     try { await startRoomCapture(handleRealtime, sessionToken); setListening(true); setPaused(false); }
     catch (cause) { await stopRoomCapture(); setError(cause instanceof Error ? cause.message : 'Microphone capture failed.'); }
   }, [handleRealtime, sessionToken]);
@@ -104,7 +106,7 @@ export default function App() {
     await beginCapture();
   }, [consent, beginCapture]);
 
-  const stop = useCallback(async () => { await stopRoomCapture(); setListening(false); setPaused(false); setMicLevel(0); }, []);
+  const stop = useCallback(async () => { await stopRoomCapture(); setListening(false); setPaused(false); setMicLevel(0); setCaptureDetail(''); }, []);
   const togglePause = async () => { if (paused) { await resumeRoomCapture(); setPaused(false); } else { await pauseRoomCapture(); setPaused(true); } };
 
   useEffect(() => {
@@ -156,7 +158,7 @@ export default function App() {
       <section className="pane transcript-pane">
         <PaneHeading eyebrow="LIVE TRANSCRIPT" title={listening ? paused ? 'Listening paused' : 'Listening to the room' : 'Ready when you are'} aside={<div className={`capture-badge ${listening && !paused ? 'live' : ''}`}><i />{listening && !paused ? 'CAPTURING' : 'OFF'}</div>} />
         {error && <div className="error-banner transcript-error"><X onClick={() => setError('')} /><span>{error}</span></div>}
-        <div className="source-notice"><Headphones /><div className="source-copy"><strong>Speaker listening mode</strong><span>Short microphone segments are transcribed and immediately discarded. Words appear every few seconds.</span></div>{listening && <div className="mic-signal" aria-label={micLevel > .025 ? 'Microphone is hearing audio' : 'Microphone is active'}>{[.55, .8, 1, .72, .48].map((weight, index) => <i key={index} style={{ transform: `scaleY(${Math.max(.12, Math.min(1, micLevel * 3.2 * weight + .12))})` }} />)}<small>{micLevel > .025 ? 'Hearing audio' : 'Mic active'}</small></div>}</div>
+        <div className="source-notice"><Headphones /><div className="source-copy"><strong>Speaker listening mode</strong><span>Short microphone segments are transcribed and immediately discarded. Words appear every few seconds.</span>{listening && captureDetail && <span className="capture-detail">{captureDetail}</span>}</div>{listening && <div className="mic-signal" aria-label={micLevel > .025 ? 'Microphone is hearing audio' : 'Microphone is active'}>{[.55, .8, 1, .72, .48].map((weight, index) => <i key={index} style={{ transform: `scaleY(${Math.max(.12, Math.min(1, micLevel * 3.2 * weight + .12))})` }} />)}<small>{micLevel > .025 ? 'Hearing audio' : 'Mic active'}</small></div>}</div>
         <div className="transcript-list">
           {transcript.length ? transcript.map(item => <article className="utterance" key={item.id}><div className="avatar">RM</div><div><div className="speaker">Room audio <time>{new Date(item.at).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}</time></div><p>{item.text}{item.partial && <span className="cursor" />}</p></div></article>) : <div className="empty-state"><div className="listening-orb"><Mic /></div><h3>Your conversation will appear here</h3><p>Place the meeting through the laptop speakers. LiveCue listens through the selected microphone without saving the audio.</p><div className="audio-route"><Volume2 /><span>Laptop loudspeaker</span><ChevronRight /><Mic /><span>Microphone</span><ChevronRight /><Sparkles /><span>LiveCue</span></div></div>}
         </div>
