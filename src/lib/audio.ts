@@ -2,6 +2,7 @@ export type RealtimeEvent =
   | { kind: 'status'; status: string }
   | { kind: 'delta'; itemId: string; text: string }
   | { kind: 'completed'; itemId: string; text: string }
+  | { kind: 'level'; value: number }
   | { kind: 'error'; text: string };
 
 interface ActiveCapture {
@@ -27,33 +28,81 @@ function pcm16Base64(float32: Float32Array) {
   return btoa(binary);
 }
 
+export function resampleTo24k(input: Float32Array, inputRate: number) {
+  if (inputRate === 24_000) return new Float32Array(input);
+  const ratio = inputRate / 24_000;
+  const length = Math.max(1, Math.floor(input.length / ratio));
+  const output = new Float32Array(length);
+  if (ratio > 1) {
+    for (let index = 0; index < length; index++) {
+      const start = Math.floor(index * ratio);
+      const end = Math.max(start + 1, Math.min(input.length, Math.floor((index + 1) * ratio)));
+      let sum = 0;
+      for (let source = start; source < end; source++) sum += input[source];
+      output[index] = sum / (end - start);
+    }
+  } else {
+    for (let index = 0; index < length; index++) {
+      const position = index * ratio;
+      const left = Math.floor(position);
+      const right = Math.min(input.length - 1, left + 1);
+      const mix = position - left;
+      output[index] = input[left] * (1 - mix) + input[right] * mix;
+    }
+  }
+  return output;
+}
+
 export async function startRoomCapture(onEvent: (event: RealtimeEvent) => void, token = '') {
   if (active) return;
-  const stream = await navigator.mediaDevices.getUserMedia({
-    audio: { echoCancellation: false, noiseSuppression: false, autoGainControl: true, channelCount: 1 },
-    video: false
-  });
+  const context = new AudioContext();
+  await context.resume();
+  let stream: MediaStream;
+  try {
+    stream = await navigator.mediaDevices.getUserMedia({
+      audio: { echoCancellation: false, noiseSuppression: false, autoGainControl: true, channelCount: 1 },
+      video: false
+    });
+  } catch (error) {
+    await context.close();
+    throw error;
+  }
   const protocol = location.protocol === 'https:' ? 'wss:' : 'ws:';
   const socket = new WebSocket(`${protocol}//${location.host}/realtime?token=${encodeURIComponent(token)}`);
-  await new Promise<void>((resolve, reject) => {
-    const timeout = window.setTimeout(() => reject(new Error('The transcription connection timed out.')), 10_000);
-    socket.addEventListener('open', () => { window.clearTimeout(timeout); resolve(); }, { once: true });
-    socket.addEventListener('error', () => { window.clearTimeout(timeout); reject(new Error('Could not connect to the transcription service.')); }, { once: true });
-  });
+  try {
+    await new Promise<void>((resolve, reject) => {
+      const timeout = window.setTimeout(() => reject(new Error('The transcription connection timed out.')), 10_000);
+      socket.addEventListener('open', () => { window.clearTimeout(timeout); resolve(); }, { once: true });
+      socket.addEventListener('error', () => { window.clearTimeout(timeout); reject(new Error('Could not connect to the transcription service.')); }, { once: true });
+    });
+  } catch (error) {
+    stream.getTracks().forEach(track => track.stop());
+    socket.close();
+    await context.close();
+    throw error;
+  }
   socket.addEventListener('message', event => {
     try { onEvent(JSON.parse(String(event.data)) as RealtimeEvent); }
     catch { onEvent({ kind: 'error', text: 'LiveCue received an unreadable transcription event.' }); }
   });
   socket.addEventListener('close', () => onEvent({ kind: 'status', status: 'disconnected' }));
 
-  const context = new AudioContext({ sampleRate: 24_000 });
   const source = context.createMediaStreamSource(stream);
+  if (context.state === 'suspended') await context.resume();
   const processor = context.createScriptProcessor(4096, 1, 1);
   const mute = context.createGain();
   mute.gain.value = 0;
+  let lastLevelAt = 0;
   processor.onaudioprocess = event => {
+    const audio = resampleTo24k(event.inputBuffer.getChannelData(0), event.inputBuffer.sampleRate);
+    const now = performance.now();
+    if (now - lastLevelAt > 120) {
+      const rms = Math.sqrt(audio.reduce((sum, sample) => sum + sample * sample, 0) / audio.length);
+      onEvent({ kind: 'level', value: Math.min(1, rms * 8) });
+      lastLevelAt = now;
+    }
     if (socket.readyState === WebSocket.OPEN) {
-      socket.send(JSON.stringify({ type: 'audio', audio: pcm16Base64(event.inputBuffer.getChannelData(0)) }));
+      socket.send(JSON.stringify({ type: 'audio', audio: pcm16Base64(audio) }));
     }
   };
   source.connect(processor);

@@ -32,6 +32,8 @@ export default function App() {
   const [listening, setListening] = useState(false);
   const [paused, setPaused] = useState(false);
   const [consent, setConsent] = useState(false);
+  const [consentPromptOpen, setConsentPromptOpen] = useState(false);
+  const [micLevel, setMicLevel] = useState(0);
   const [configured, setConfigured] = useState(false);
   const [authRequired, setAuthRequired] = useState(false);
   const [sessionToken, setSessionToken] = useState(() => sessionStorage.getItem('livecue-session') || '');
@@ -69,6 +71,7 @@ export default function App() {
 
   const handleRealtime = useCallback((event: RealtimeEvent) => {
     if (event.kind === 'error') return setError(event.text);
+    if (event.kind === 'level') return setMicLevel(event.value);
     if (event.kind === 'delta') {
       partials.current[event.itemId] = (partials.current[event.itemId] ?? '') + event.text;
       const item: TranscriptItem = { id: event.itemId, text: partials.current[event.itemId], partial: true, at: Date.now() };
@@ -84,14 +87,18 @@ export default function App() {
     }
   }, [sensitivity]);
 
-  const start = useCallback(async () => {
-    if (!consent) return setError('Confirm the consent and privacy notice before listening.');
+  const beginCapture = useCallback(async () => {
     setError('');
     try { await startRoomCapture(handleRealtime, sessionToken); setListening(true); setPaused(false); }
     catch (cause) { await stopRoomCapture(); setError(cause instanceof Error ? cause.message : 'Microphone capture failed.'); }
-  }, [consent, handleRealtime, sessionToken]);
+  }, [handleRealtime, sessionToken]);
 
-  const stop = useCallback(async () => { await stopRoomCapture(); setListening(false); setPaused(false); }, []);
+  const start = useCallback(async () => {
+    if (!consent) { setConsentPromptOpen(true); return; }
+    await beginCapture();
+  }, [consent, beginCapture]);
+
+  const stop = useCallback(async () => { await stopRoomCapture(); setListening(false); setPaused(false); setMicLevel(0); }, []);
   const togglePause = async () => { if (paused) { await resumeRoomCapture(); setPaused(false); } else { await pauseRoomCapture(); setPaused(true); } };
 
   useEffect(() => {
@@ -142,7 +149,8 @@ export default function App() {
     <main className="workspace">
       <section className="pane transcript-pane">
         <PaneHeading eyebrow="LIVE TRANSCRIPT" title={listening ? paused ? 'Listening paused' : 'Listening to the room' : 'Ready when you are'} aside={<div className={`capture-badge ${listening && !paused ? 'live' : ''}`}><i />{listening && !paused ? 'CAPTURING' : 'OFF'}</div>} />
-        <div className="source-notice"><Headphones /><div><strong>Speaker listening mode</strong><span>LiveCue hears your voice and laptop loudspeaker together through one microphone.</span></div></div>
+        {error && <div className="error-banner transcript-error"><X onClick={() => setError('')} /><span>{error}</span></div>}
+        <div className="source-notice"><Headphones /><div className="source-copy"><strong>Speaker listening mode</strong><span>LiveCue hears your voice and laptop loudspeaker together through one microphone.</span></div>{listening && <div className="mic-signal" aria-label={micLevel > .025 ? 'Microphone is hearing audio' : 'Microphone is listening'}>{[.55, .8, 1, .72, .48].map((weight, index) => <i key={index} style={{ transform: `scaleY(${Math.max(.12, Math.min(1, micLevel * 3.2 * weight + .12))})` }} />)}<small>{micLevel > .025 ? 'Hearing audio' : 'Listening…'}</small></div>}</div>
         <div className="transcript-list">
           {transcript.length ? transcript.map(item => <article className="utterance" key={item.id}><div className="avatar">RM</div><div><div className="speaker">Room audio <time>{new Date(item.at).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}</time></div><p>{item.text}{item.partial && <span className="cursor" />}</p></div></article>) : <div className="empty-state"><div className="listening-orb"><Mic /></div><h3>Your conversation will appear here</h3><p>Place the meeting through the laptop speakers. LiveCue will listen through the selected microphone without recording the audio.</p><div className="audio-route"><Volume2 /><span>Laptop loudspeaker</span><ChevronRight /><Mic /><span>Microphone</span><ChevronRight /><Sparkles /><span>LiveCue</span></div></div>}
         </div>
@@ -151,7 +159,6 @@ export default function App() {
 
       <section className="pane cue-pane">
         <PaneHeading eyebrow="CURRENT PROMPT" title={loading ? 'Building grounded cues…' : cue ? 'Response ready' : 'Simulation mode'} aside={<span className="silent-pill">SILENT ONLY</span>} />
-        {error && <div className="error-banner"><X onClick={() => setError('')} /><span>{error}</span></div>}
         {cue ? <CuePanel cue={cue} dismiss={() => setCue(null)} regenerate={() => analyse(cue.question)} pin={() => setPinned(items => [cue.bestEvidence, ...items.filter(item => item !== cue.bestEvidence)])} loading={loading} /> : <Simulation question={question} setQuestion={setQuestion} analyse={() => analyse()} loading={loading} pack={pack} />}
         <EvidenceCard pack={pack} uploading={uploading} upload={uploadDocuments} />
       </section>
@@ -169,6 +176,7 @@ export default function App() {
 
     <div className="consent-bar"><label><input type="checkbox" checked={consent} onChange={event => setConsent(event.target.checked)} /><span>Only use LiveCue where recording, transcription and AI assistance are permitted. You are responsible for obtaining any required consent.</span></label></div>
 
+    {consentPromptOpen && <div className="modal-backdrop"><div className="modal consent-modal"><div className="modal-icon"><ShieldCheck /></div><span className="eyebrow">CONSENT REQUIRED</span><h2>Before LiveCue listens</h2><p>Only use LiveCue where recording, transcription and AI assistance are permitted. You are responsible for obtaining any required consent.</p><button className="start wide" onClick={() => { setConsent(true); setConsentPromptOpen(false); void beginCapture(); }}><Mic />I understand, start listening</button><button className="secondary wide consent-cancel" onClick={() => setConsentPromptOpen(false)}>Cancel</button></div></div>}
     {settingsOpen && <div className="modal-backdrop"><div className="modal"><button className="modal-close" onClick={() => setSettingsOpen(false)}><X /></button><div className="modal-icon"><Settings /></div><span className="eyebrow">SESSION SETTINGS</span><h2>How should LiveCue support you?</h2><label>Mode<select value={mode} onChange={event => setMode(event.target.value as Mode)}>{modes.map(item => <option key={item}>{item}</option>)}</select></label><label>Question sensitivity<select value={sensitivity} onChange={event => setSensitivity(event.target.value as Sensitivity)}><option>Low</option><option>Balanced</option><option>High</option></select></label><label>Role, objectives and speaking style<textarea value={instructions} onChange={event => setInstructions(event.target.value)} /></label><div className="shortcut-list"><span><kbd>Ctrl</kbd><kbd>Shift</kbd><kbd>S</kbd> Start or stop</span><span><kbd>Ctrl</kbd><kbd>Enter</kbd> Analyse current transcript</span><span><kbd>Esc</kbd> Dismiss prompt</span></div><button className="start wide" onClick={() => setSettingsOpen(false)}>Save settings</button></div></div>}
     {authRequired && !sessionToken && <div className="modal-backdrop auth-backdrop"><form className="modal auth-modal" onSubmit={event => { event.preventDefault(); void signIn(); }}><div className="modal-icon"><LockKeyhole /></div><span className="eyebrow">PRIVATE WEB APP</span><h2>Welcome to LiveCue</h2><p>Enter your private access code to open the meeting copilot.</p><label>Access code<input autoFocus type="password" value={accessCode} onChange={event => setAccessCode(event.target.value)} autoComplete="current-password" /></label>{authError && <div className="error-banner auth-error"><span>{authError}</span></div>}<button className="start wide" disabled={!accessCode || authenticating}>{authenticating ? <LoaderCircle className="spin" /> : <LockKeyhole />}Open LiveCue</button><small>Your access code is exchanged for a temporary browser session and is not stored in the app.</small></form></div>}
   </div>;

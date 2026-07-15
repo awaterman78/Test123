@@ -60,9 +60,12 @@ button:disabled { cursor: not-allowed; opacity: .5; }
 .silent-pill { font-size: 9px; letter-spacing: .12em; color: #50645e; border: 1px solid #d7dfdc; background: #f6f8f7; border-radius: 999px; padding: 7px 10px; font-weight: 800; }
 .source-notice { margin: 18px 26px 0; padding: 12px 14px; display: flex; align-items: center; gap: 10px; color: #2b5c4f; background: #eff6f3; border: 1px solid #dcebe5; border-radius: 11px; }
 .source-notice svg { width: 18px; }
-.source-notice div { display: flex; flex-direction: column; }
+.source-notice .source-copy { display: flex; flex: 1; min-width: 0; flex-direction: column; }
 .source-notice strong { font-size: 11px; }
 .source-notice span { font-size: 10px; color: #64766f; }
+.mic-signal { display: flex; flex: 0 0 auto; height: 29px; align-items: flex-end; gap: 3px; color: #28735d; }
+.mic-signal i { width: 3px; height: 18px; border-radius: 3px; background: #3a8b72; transform-origin: bottom; transition: transform 100ms ease-out; }
+.mic-signal small { align-self: center; margin-left: 4px; color: #397361; font-size: 8px; font-weight: 700; white-space: nowrap; }
 .transcript-list { flex: 1; min-height: 300px; max-height: calc(100vh - 370px); overflow: auto; padding: 20px 28px; }
 .empty-state { height: 100%; min-height: 300px; display: flex; align-items: center; justify-content: center; flex-direction: column; text-align: center; color: var(--muted); }
 .listening-orb { width: 72px; height: 72px; display: grid; place-items: center; border-radius: 50%; color: #36715f; background: radial-gradient(circle at 36% 30%, #fff 0, #e5f0ec 55%, #cfdfd9 100%); box-shadow: 0 15px 35px rgba(27, 87, 69, .12), inset 0 0 0 8px rgba(255,255,255,.55); }
@@ -112,6 +115,7 @@ button:disabled { cursor: not-allowed; opacity: .5; }
 .save-pack { padding: 10px 0 0; margin-top: 10px; border-top: 1px solid #edf0ef; width: 100%; }
 .error-banner { margin: 14px 26px -7px; display: flex; gap: 9px; align-items: flex-start; color: #8d4033; background: #fff3f0; border: 1px solid #efcfc8; border-radius: 10px; padding: 10px 12px; font-size: 11px; }
 .error-banner svg { width: 15px; flex: 0 0 auto; cursor: pointer; }
+.transcript-error { margin-bottom: 0; }
 
 .cue-card { overflow: hidden; }
 .cue-card section { padding: 16px 20px; border-bottom: 1px solid #edf0ef; }
@@ -170,6 +174,10 @@ kbd { min-width: 22px; padding: 3px 5px; border: 1px solid #d4dcda; border-botto
 .auth-modal .wide { margin-top: 18px; }
 .auth-modal > small { display: block; margin-top: 13px; color: #929b98; font-size: 9px; line-height: 1.45; text-align: center; }
 .auth-error { margin: 12px 0 0; }
+.consent-modal { width: min(440px, 100%); }
+.consent-modal > p { margin: -8px 0 22px; color: #66746f; font-size: 12px; line-height: 1.6; }
+.consent-modal .start { min-height: 44px; }
+.consent-cancel { min-height: 40px; margin-top: 9px; }
 .spin { animation: spin 1s linear infinite; }
 
 @keyframes spin { to { transform: rotate(360deg); } }
@@ -204,6 +212,10 @@ kbd { min-width: 22px; padding: 3px 5px; border: 1px solid #d4dcda; border-botto
   .control { font-size: 0; width: 39px; height: 39px; padding: 0; }
   .pane-heading { padding: 0 18px; }
   .source-notice, .simulation-card, .cue-card, .evidence-pack { margin-left: 14px; margin-right: 14px; }
+  .transcript-error { margin-left: 14px; margin-right: 14px; }
+  .source-notice { align-items: flex-start; }
+  .mic-signal { margin-top: 2px; }
+  .mic-signal small { display: none; }
   .transcript-list { padding: 18px; }
   .audio-route { flex-wrap: wrap; justify-content: center; }
   .bridge-grid, .meeting-extras { grid-template-columns: 1fr; }
