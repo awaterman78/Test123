@@ -13,6 +13,37 @@ const app = express();
 app.use(express.json({ limit: '1mb' }));
 app.disable('x-powered-by');
 
+const accessCode = process.env.LIVECUE_ACCESS_CODE?.trim() || '';
+const loginAttempts = new Map<string, { count: number; resetAt: number }>();
+
+function safeEqual(left: string, right: string) {
+  const leftHash = crypto.createHash('sha256').update(left).digest();
+  const rightHash = crypto.createHash('sha256').update(right).digest();
+  return crypto.timingSafeEqual(leftHash, rightHash);
+}
+
+function issueSessionToken() {
+  const payload = Buffer.from(JSON.stringify({ exp: Date.now() + 8 * 60 * 60 * 1000, nonce: crypto.randomBytes(12).toString('hex') })).toString('base64url');
+  const signature = crypto.createHmac('sha256', accessCode).update(payload).digest('base64url');
+  return `${payload}.${signature}`;
+}
+
+function validSessionToken(token: string) {
+  if (!accessCode) return true;
+  const [payload, signature] = token.split('.');
+  if (!payload || !signature) return false;
+  const expected = crypto.createHmac('sha256', accessCode).update(payload).digest('base64url');
+  if (!safeEqual(signature, expected)) return false;
+  try { return Number(JSON.parse(Buffer.from(payload, 'base64url').toString()).exp) > Date.now(); }
+  catch { return false; }
+}
+
+const requireSession: express.RequestHandler = (request, response, next) => {
+  const token = request.headers.authorization?.replace(/^Bearer\s+/i, '') || '';
+  if (!validSessionToken(token)) return response.status(401).json({ error: 'Your LiveCue session has expired. Sign in again.' });
+  next();
+};
+
 const requestSchema = z.object({
   question: z.string().min(3).max(4_000),
   mode: z.enum(['Interview', 'Meeting', 'Negotiation', 'Sales', 'General']),
@@ -33,10 +64,26 @@ const cueSchema = {
   required: ['question', 'answerCues', 'bestEvidence', 'evidenceSource', 'bridge', 'followUp', 'challenge', 'action', 'grounded']
 };
 
-app.get('/api/status', (_request, response) => response.json({ configured: Boolean(process.env.OPENAI_API_KEY) }));
+app.get('/api/status', (_request, response) => response.json({ configured: Boolean(process.env.OPENAI_API_KEY), authRequired: Boolean(accessCode) }));
 app.get('/api/health', (_request, response) => response.json({ ok: true }));
 
-app.post('/api/cues', async (request, response) => {
+app.post('/api/auth', (request, response) => {
+  if (!accessCode) return response.json({ token: 'local-development' });
+  const address = request.ip || 'unknown';
+  const now = Date.now();
+  const attempt = loginAttempts.get(address);
+  const current = !attempt || attempt.resetAt < now ? { count: 0, resetAt: now + 15 * 60 * 1000 } : attempt;
+  if (current.count >= 5) return response.status(429).json({ error: 'Too many attempts. Try again in 15 minutes.' });
+  const supplied = typeof request.body?.code === 'string' ? request.body.code : '';
+  if (!safeEqual(supplied, accessCode)) {
+    current.count += 1; loginAttempts.set(address, current);
+    return response.status(401).json({ error: 'That access code is not correct.' });
+  }
+  loginAttempts.delete(address);
+  response.json({ token: issueSessionToken() });
+});
+
+app.post('/api/cues', requireSession, async (request, response) => {
   try {
     const input = requestSchema.parse(request.body);
     if (!process.env.OPENAI_API_KEY) return response.json({ ...localCue(input), local: true });
@@ -58,7 +105,8 @@ const server = http.createServer(app);
 const realtimeServer = new WebSocketServer({ noServer: true });
 
 server.on('upgrade', (request, socket, head) => {
-  if (request.url !== '/realtime') return socket.destroy();
+  const url = new URL(request.url || '/', 'http://localhost');
+  if (url.pathname !== '/realtime' || !validSessionToken(url.searchParams.get('token') || '')) return socket.destroy();
   realtimeServer.handleUpgrade(request, socket, head, client => realtimeServer.emit('connection', client, request));
 });
 

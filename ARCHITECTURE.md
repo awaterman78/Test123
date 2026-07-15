@@ -48,6 +48,8 @@ Interview prompts prohibit unsupported experience, clients, figures, qualificati
 ## Security controls
 
 * No API key in Vite environment variables or browser assets.
+* Private access-code gate for hosted deployments.
+* Eight-hour signed browser sessions and rate-limited login attempts.
 * Same-origin WebSocket endpoint with a narrow audio message contract.
 * One megabyte maximum inbound audio message.
 * One megabyte JSON request limit.

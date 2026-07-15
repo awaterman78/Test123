@@ -34,7 +34,7 @@ LiveCue is designed to run at a normal HTTPS address. It is not a Windows applic
 
 [![Deploy LiveCue to Render](https://render.com/images/deploy-to-render-button.svg)](https://render.com/deploy?repo=https://github.com/awaterman78/Test123)
 
-The included `render.yaml` creates the complete Node web service, including WebSocket support, TLS and the private server environment. During the first deployment, Render prompts for `OPENAI_API_KEY`. The key remains a server secret and is never built into the website.
+The included `render.yaml` creates the complete Node web service, including WebSocket support, TLS and the private server environment. During the first deployment, Render prompts for `OPENAI_API_KEY` and `LIVECUE_ACCESS_CODE`. Choose a strong private access code that you will use to open LiveCue. Both values remain server secrets and are never built into the website.
 
 For a temporary preview, the Free instance is sufficient. Render Free services can sleep after 15 minutes of inactivity, so the first visit after a quiet period can take around one minute to wake. A paid instance can be selected later if instant availability is required.
 
@@ -61,6 +61,7 @@ Set the key in `.env`:
 
 ```dotenv
 OPENAI_API_KEY=your_key_here
+LIVECUE_ACCESS_CODE=choose_a_private_access_code
 OPENAI_CUE_MODEL=gpt-5.6
 PORT=8787
 ```
@@ -74,6 +75,8 @@ Open [http://localhost:5173](http://localhost:5173) in Edge or Chrome.
 5. Press `Start listening` and allow microphone access.
 
 The permanent API key is read only by the Node server. It is never included in browser code, local storage, logs or built assets.
+
+For a hosted deployment, LiveCue exchanges the private access code for an eight-hour signed browser session. The access code is not stored by the browser. Login attempts are rate limited.
 
 ## Commands
 

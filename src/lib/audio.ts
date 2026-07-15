@@ -27,14 +27,14 @@ function pcm16Base64(float32: Float32Array) {
   return btoa(binary);
 }
 
-export async function startRoomCapture(onEvent: (event: RealtimeEvent) => void) {
+export async function startRoomCapture(onEvent: (event: RealtimeEvent) => void, token = '') {
   if (active) return;
   const stream = await navigator.mediaDevices.getUserMedia({
     audio: { echoCancellation: false, noiseSuppression: false, autoGainControl: true, channelCount: 1 },
     video: false
   });
   const protocol = location.protocol === 'https:' ? 'wss:' : 'ws:';
-  const socket = new WebSocket(`${protocol}//${location.host}/realtime`);
+  const socket = new WebSocket(`${protocol}//${location.host}/realtime?token=${encodeURIComponent(token)}`);
   await new Promise<void>((resolve, reject) => {
     const timeout = window.setTimeout(() => reject(new Error('The transcription connection timed out.')), 10_000);
     socket.addEventListener('open', () => { window.clearTimeout(timeout); resolve(); }, { once: true });

@@ -2,7 +2,7 @@ import { useCallback, useEffect, useRef, useState } from 'react';
 import {
   AudioLines, BookOpen, Check, ChevronRight, CircleStop, Download, FileText, Headphones,
   LoaderCircle, Mic, Pause, Pin, Play, Radio, RefreshCw, Save, Settings, ShieldCheck,
-  Sparkles, Upload, Volume2, X
+  Sparkles, Upload, Volume2, X, LockKeyhole
 } from 'lucide-react';
 import { pauseRoomCapture, resumeRoomCapture, startRoomCapture, stopRoomCapture, type RealtimeEvent } from './lib/audio';
 import { buildEvidencePack, demoPack, extractFile } from './lib/evidence';
@@ -33,6 +33,11 @@ export default function App() {
   const [paused, setPaused] = useState(false);
   const [consent, setConsent] = useState(false);
   const [configured, setConfigured] = useState(false);
+  const [authRequired, setAuthRequired] = useState(false);
+  const [sessionToken, setSessionToken] = useState(() => sessionStorage.getItem('livecue-session') || '');
+  const [accessCode, setAccessCode] = useState('');
+  const [authError, setAuthError] = useState('');
+  const [authenticating, setAuthenticating] = useState(false);
   const [loading, setLoading] = useState(false);
   const [uploading, setUploading] = useState(false);
   const [error, setError] = useState('');
@@ -45,20 +50,20 @@ export default function App() {
   const lastCompleted = useRef('');
   const analyseRef = useRef<(value?: string) => Promise<void>>(async () => {});
 
-  useEffect(() => { fetch('/api/status').then(response => response.json()).then(data => setConfigured(Boolean(data.configured))).catch(() => setConfigured(false)); }, []);
+  useEffect(() => { fetch('/api/status').then(response => response.json()).then(data => { setConfigured(Boolean(data.configured)); setAuthRequired(Boolean(data.authRequired)); }).catch(() => setConfigured(false)); }, []);
 
   const analyse = useCallback(async (value = question) => {
     const clean = value.trim();
     if (!clean) return;
     setLoading(true); setError(''); setQuestion(clean);
     try {
-      const next = await requestCue(clean, mode, instructions, pack);
+      const next = await requestCue(clean, mode, instructions, pack, sessionToken);
       setCue(next);
       setRecent(items => [next, ...items.filter(item => item.question !== next.question)].slice(0, 12));
       if (next.action) setActions(items => [next.action!, ...items.filter(item => item !== next.action)].slice(0, 12));
     } catch (cause) { setError(cause instanceof Error ? cause.message : 'Cue generation failed.'); }
     finally { setLoading(false); }
-  }, [question, mode, instructions, pack]);
+  }, [question, mode, instructions, pack, sessionToken]);
 
   useEffect(() => { analyseRef.current = analyse; }, [analyse]);
 
@@ -82,9 +87,9 @@ export default function App() {
   const start = useCallback(async () => {
     if (!consent) return setError('Confirm the consent and privacy notice before listening.');
     setError('');
-    try { await startRoomCapture(handleRealtime); setListening(true); setPaused(false); }
+    try { await startRoomCapture(handleRealtime, sessionToken); setListening(true); setPaused(false); }
     catch (cause) { await stopRoomCapture(); setError(cause instanceof Error ? cause.message : 'Microphone capture failed.'); }
-  }, [consent, handleRealtime]);
+  }, [consent, handleRealtime, sessionToken]);
 
   const stop = useCallback(async () => { await stopRoomCapture(); setListening(false); setPaused(false); }, []);
   const togglePause = async () => { if (paused) { await resumeRoomCapture(); setPaused(false); } else { await pauseRoomCapture(); setPaused(true); } };
@@ -110,6 +115,18 @@ export default function App() {
   };
 
   const saveTranscript = () => download(`LiveCue transcript ${new Date().toISOString().slice(0, 10)}.txt`, transcript.map(item => `[Room audio] ${item.text}`).join('\n\n'));
+
+  const signIn = async () => {
+    setAuthenticating(true); setAuthError('');
+    try {
+      const response = await fetch('/api/auth', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ code: accessCode }) });
+      const body = await response.json();
+      if (!response.ok) throw new Error(body.error || 'Sign in failed.');
+      sessionStorage.setItem('livecue-session', body.token);
+      setSessionToken(body.token); setAccessCode('');
+    } catch (cause) { setAuthError(cause instanceof Error ? cause.message : 'Sign in failed.'); }
+    finally { setAuthenticating(false); }
+  };
 
   return <div className="app-shell">
     <header className="topbar">
@@ -153,6 +170,7 @@ export default function App() {
     <div className="consent-bar"><label><input type="checkbox" checked={consent} onChange={event => setConsent(event.target.checked)} /><span>Only use LiveCue where recording, transcription and AI assistance are permitted. You are responsible for obtaining any required consent.</span></label></div>
 
     {settingsOpen && <div className="modal-backdrop"><div className="modal"><button className="modal-close" onClick={() => setSettingsOpen(false)}><X /></button><div className="modal-icon"><Settings /></div><span className="eyebrow">SESSION SETTINGS</span><h2>How should LiveCue support you?</h2><label>Mode<select value={mode} onChange={event => setMode(event.target.value as Mode)}>{modes.map(item => <option key={item}>{item}</option>)}</select></label><label>Question sensitivity<select value={sensitivity} onChange={event => setSensitivity(event.target.value as Sensitivity)}><option>Low</option><option>Balanced</option><option>High</option></select></label><label>Role, objectives and speaking style<textarea value={instructions} onChange={event => setInstructions(event.target.value)} /></label><div className="shortcut-list"><span><kbd>Ctrl</kbd><kbd>Shift</kbd><kbd>S</kbd> Start or stop</span><span><kbd>Ctrl</kbd><kbd>Enter</kbd> Analyse current transcript</span><span><kbd>Esc</kbd> Dismiss prompt</span></div><button className="start wide" onClick={() => setSettingsOpen(false)}>Save settings</button></div></div>}
+    {authRequired && !sessionToken && <div className="modal-backdrop auth-backdrop"><form className="modal auth-modal" onSubmit={event => { event.preventDefault(); void signIn(); }}><div className="modal-icon"><LockKeyhole /></div><span className="eyebrow">PRIVATE WEB APP</span><h2>Welcome to LiveCue</h2><p>Enter your private access code to open the meeting copilot.</p><label>Access code<input autoFocus type="password" value={accessCode} onChange={event => setAccessCode(event.target.value)} autoComplete="current-password" /></label>{authError && <div className="error-banner auth-error"><span>{authError}</span></div>}<button className="start wide" disabled={!accessCode || authenticating}>{authenticating ? <LoaderCircle className="spin" /> : <LockKeyhole />}Open LiveCue</button><small>Your access code is exchanged for a temporary browser session and is not stored in the app.</small></form></div>}
   </div>;
 }
 

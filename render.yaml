@@ -13,5 +13,7 @@ services:
         value: 22
       - key: OPENAI_API_KEY
         sync: false
+      - key: LIVECUE_ACCESS_CODE
+        sync: false
       - key: OPENAI_CUE_MODEL
         value: gpt-5.6

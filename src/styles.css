@@ -158,12 +158,18 @@ button:disabled { cursor: not-allowed; opacity: .5; }
 .modal-icon svg { width: 19px; }
 .modal h2 { margin: 5px 0 20px; font-family: Manrope, sans-serif; font-size: 20px; }
 .modal > label { display: flex; flex-direction: column; gap: 6px; margin-top: 12px; color: #63706c; font-size: 10px; font-weight: 700; }
-.modal select, .modal textarea { border: 1px solid #d8e0dd; border-radius: 9px; padding: 10px; color: #34413d; background: #fff; outline: 0; }
+.modal select, .modal textarea, .modal input { border: 1px solid #d8e0dd; border-radius: 9px; padding: 10px; color: #34413d; background: #fff; outline: 0; }
 .modal textarea { min-height: 90px; resize: vertical; }
 .shortcut-list { display: grid; gap: 6px; margin: 18px 0; padding: 13px; border-radius: 10px; background: #f4f7f6; color: #6f7a76; font-size: 9px; }
 .shortcut-list span { display: flex; align-items: center; gap: 4px; }
 kbd { min-width: 22px; padding: 3px 5px; border: 1px solid #d4dcda; border-bottom-width: 2px; border-radius: 4px; background: #fff; color: #44504c; text-align: center; font-size: 8px; }
 .wide { width: 100%; }
+.auth-backdrop { background: radial-gradient(circle at 50% 20%, rgba(26, 85, 68, .9), rgba(4, 20, 16, .96)); }
+.auth-modal { width: min(430px, 100%); padding: 34px; }
+.auth-modal > p { margin: -10px 0 20px; color: #73807c; font-size: 12px; line-height: 1.55; }
+.auth-modal .wide { margin-top: 18px; }
+.auth-modal > small { display: block; margin-top: 13px; color: #929b98; font-size: 9px; line-height: 1.45; text-align: center; }
+.auth-error { margin: 12px 0 0; }
 .spin { animation: spin 1s linear infinite; }
 
 @keyframes spin { to { transform: rotate(360deg); } }
