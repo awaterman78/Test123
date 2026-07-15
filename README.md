@@ -32,6 +32,8 @@ Place the laptop on a desk, use its speakers at a comfortable volume and avoid p
 
 LiveCue is designed to run at a normal HTTPS address. It is not a Windows application and has no installer or executable.
 
+[![Deploy LiveCue to Render](https://render.com/images/deploy-to-render-button.svg)](https://render.com/deploy?repo=https://github.com/awaterman78/Test123)
+
 The included `render.yaml` creates the complete Node web service, including WebSocket support, TLS and the private server environment. During the first deployment, Render prompts for `OPENAI_API_KEY`. The key remains a server secret and is never built into the website.
 
 For a temporary preview, the Free instance is sufficient. Render Free services can sleep after 15 minutes of inactivity, so the first visit after a quiet period can take around one minute to wake. A paid instance can be selected later if instant availability is required.
