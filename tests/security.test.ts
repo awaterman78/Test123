@@ -13,5 +13,8 @@ describe('secure web boundaries', () => {
     const server = fs.readFileSync('server/index.ts', 'utf8');
     expect(server).toContain("event.type === 'audio'");
     expect(server).toContain('event.audio.length < 1_000_000');
+    expect(server).toContain("app.post('/api/transcribe-segment'");
+    expect(server).toContain("limit: '12mb'");
+    expect(server).toContain("response.set('Cache-Control', 'no-store')");
   });
 });

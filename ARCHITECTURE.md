@@ -8,9 +8,9 @@ This release is a browser-first vertical slice. One browser microphone captures 
 
 ### React browser application
 
-The browser owns the interface, microphone permission, PCM conversion, document text extraction, evidence retrieval, rolling transcript and question detection.
+The browser owns the interface, microphone permission, in-memory audio segmentation, document text extraction, evidence retrieval, rolling transcript and question detection.
 
-The microphone is requested with echo cancellation and noise suppression disabled so laptop speaker audio is less likely to be removed. Audio is converted to mono 24 kHz PCM16 and sent in bounded Base64 chunks over a same-origin WebSocket.
+The microphone is requested with echo cancellation and noise suppression disabled so laptop speaker audio is less likely to be removed. `MediaRecorder` creates self-contained four-second MP4 or WebM segments in memory. Each segment is sent over a protected same-origin HTTP endpoint and discarded immediately after transcription.
 
 DOCX, PDF, TXT and Markdown extraction occurs in the browser. Documents are transformed into evidence items that retain the original filename and extracted section. The original document bytes are not sent to the LiveCue server.
 
@@ -18,16 +18,16 @@ DOCX, PDF, TXT and Markdown extraction occurs in the browser. Documents are tran
 
 The server has two narrow responsibilities:
 
-1. Proxy bounded audio messages to a dedicated OpenAI Realtime transcription WebSocket.
+1. Send bounded, in-memory audio segments to the OpenAI Audio Transcriptions API.
 2. Generate structured grounded cues through the Responses API.
 
 The permanent OpenAI API key exists only in the server environment. No endpoint returns the key or accepts a key from the browser.
 
-### Realtime transcription
+### Near-live transcription
 
-The Node server opens the dedicated transcription intent endpoint. It sends a `session.update` whose session type is `transcription`. The transcription model is nested under `audio.input.transcription.model`. Server voice activity detection determines completed utterances.
+The Node server sends each segment to `gpt-4o-transcribe` and returns only the completed text. This segmented path is deliberately used for the current mobile release because Safari reliably supplies self-contained MP4 audio through `MediaRecorder`. A dedicated Realtime transcription transport remains available for the next streaming iteration.
 
-The browser receives only connection status, transcript delta, completed utterance and safe error events.
+The browser receives only connection status, completed utterances and safe error events.
 
 ### Question and cue pipeline
 
@@ -39,7 +39,7 @@ Interview prompts prohibit unsupported experience, clients, figures, qualificati
 
 | Data | Default location | Persistence |
 | --- | --- | --- |
-| Raw microphone audio | Browser memory and live WebSocket | None in LiveCue |
+| Raw microphone audio | Short-lived browser and request memory | None in LiveCue |
 | Rolling transcript | Browser memory | Only by explicit download |
 | Uploaded document bytes | Browser memory | None |
 | Evidence pack | Browser memory | Only by explicit JSON download |
@@ -50,13 +50,12 @@ Interview prompts prohibit unsupported experience, clients, figures, qualificati
 * No API key in Vite environment variables or browser assets.
 * Private access-code gate for hosted deployments.
 * Eight-hour signed browser sessions and rate-limited login attempts.
-* Same-origin WebSocket endpoint with a narrow audio message contract.
-* One megabyte maximum inbound audio message.
+* Same-origin protected transcription endpoint with a 12 MB request limit.
 * One megabyte JSON request limit.
 * Zod validation and evidence limits on cue requests.
 * No server document upload endpoint.
-* No audio recording path.
-* Immediate track, AudioContext and socket release on full stop.
+* No audio disk storage or permanent recording path.
+* Immediate track and AudioContext release plus request cancellation on full stop.
 
 Before internet deployment, add normal production controls including authenticated sessions, origin validation, rate limiting, per-user quotas, structured audit events without transcript content, and a restrictive Content Security Policy.
 

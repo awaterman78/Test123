@@ -114,6 +114,37 @@ app.post('/api/realtime-session', express.text({ type: 'application/sdp', limit:
   }
 });
 
+app.post('/api/transcribe-segment', express.raw({
+  type: ['audio/mp4', 'audio/webm', 'audio/mpeg', 'audio/m4a', 'application/octet-stream'],
+  limit: '12mb'
+}), requireSession, async (request, response) => {
+  if (!process.env.OPENAI_API_KEY) return response.status(503).json({ error: 'The server has no OpenAI API key.' });
+  if (!Buffer.isBuffer(request.body) || request.body.length < 1_000) return response.status(400).json({ error: 'The microphone supplied an empty audio segment.' });
+  const mediaType = (request.get('content-type') || 'application/octet-stream').split(';')[0];
+  const extension = mediaType === 'audio/mp4' ? 'mp4' : mediaType === 'audio/mpeg' ? 'mp3' : 'webm';
+  const form = new FormData();
+  form.set('file', new File([Uint8Array.from(request.body)], `livecue-segment.${extension}`, { type: mediaType }));
+  form.set('model', 'gpt-4o-transcribe');
+  form.set('language', 'en');
+  try {
+    const upstream = await fetch('https://api.openai.com/v1/audio/transcriptions', {
+      method: 'POST',
+      headers: { Authorization: `Bearer ${process.env.OPENAI_API_KEY}`, 'OpenAI-Safety-Identifier': safetyId },
+      body: form
+    });
+    const body = await upstream.text();
+    if (!upstream.ok) {
+      let message = 'OpenAI could not transcribe the microphone segment.';
+      try { message = JSON.parse(body).error?.message || message; } catch { /* Use the safe fallback. */ }
+      return response.status(upstream.status).json({ error: message });
+    }
+    const text = JSON.parse(body).text || '';
+    response.set('Cache-Control', 'no-store').json({ text });
+  } catch {
+    response.status(502).json({ error: 'Could not reach the transcription service.' });
+  }
+});
+
 app.post('/api/cues', requireSession, async (request, response) => {
   try {
     const input = requestSchema.parse(request.body);

@@ -7,27 +7,21 @@ export type RealtimeEvent =
 
 interface ActiveCapture {
   stream: MediaStream;
-  peer: RTCPeerConnection;
-  channel: RTCDataChannel;
+  recorder: MediaRecorder | null;
   meterContext: AudioContext | null;
   meterTimer: number;
-  commitTimer: number;
+  segmentTimer: number;
+  controller: AbortController;
+  uploadQueue: Promise<void>;
+  token: string;
+  onEvent: (event: RealtimeEvent) => void;
 }
 
 let active: ActiveCapture | null = null;
 
-function messageToEvent(raw: string): RealtimeEvent | null {
-  const event = JSON.parse(raw);
-  if (event.type === 'conversation.item.input_audio_transcription.delta') {
-    return { kind: 'delta', itemId: event.item_id, text: event.delta };
-  }
-  if (event.type === 'conversation.item.input_audio_transcription.completed') {
-    return { kind: 'completed', itemId: event.item_id, text: event.transcript };
-  }
-  if (event.type === 'error') {
-    return { kind: 'error', text: event.error?.message ?? 'Realtime transcription failed.' };
-  }
-  return null;
+function preferredMimeType() {
+  const choices = ['audio/mp4;codecs=mp4a.40.2', 'audio/mp4', 'audio/webm;codecs=opus', 'audio/webm'];
+  return choices.find(type => MediaRecorder.isTypeSupported(type)) || '';
 }
 
 async function createMeter(stream: MediaStream, onEvent: (event: RealtimeEvent) => void) {
@@ -54,83 +48,78 @@ async function createMeter(stream: MediaStream, onEvent: (event: RealtimeEvent) 
   }
 }
 
+async function transcribeSegment(capture: ActiveCapture, blob: Blob) {
+  if (blob.size < 1_000 || capture.controller.signal.aborted) return;
+  const response = await fetch('/api/transcribe-segment', {
+    method: 'POST',
+    headers: { 'Content-Type': blob.type || 'application/octet-stream', Authorization: `Bearer ${capture.token}` },
+    body: blob,
+    signal: capture.controller.signal
+  });
+  const result = await response.json();
+  if (!response.ok) throw new Error(result.error || 'The microphone segment could not be transcribed.');
+  const text = typeof result.text === 'string' ? result.text.trim() : '';
+  if (text && active === capture) capture.onEvent({ kind: 'completed', itemId: `segment-${Date.now()}`, text });
+}
+
+function startSegment(capture: ActiveCapture) {
+  if (active !== capture || capture.controller.signal.aborted) return;
+  const chunks: Blob[] = [];
+  const mimeType = preferredMimeType();
+  const recorder = new MediaRecorder(capture.stream, mimeType ? { mimeType } : undefined);
+  capture.recorder = recorder;
+  recorder.addEventListener('dataavailable', event => { if (event.data.size) chunks.push(event.data); });
+  recorder.addEventListener('error', () => {
+    if (active !== capture) return;
+    capture.onEvent({ kind: 'error', text: 'Safari could not read the microphone audio. Press Start listening to retry.' });
+    capture.onEvent({ kind: 'status', status: 'disconnected' });
+    void stopRoomCapture();
+  });
+  recorder.addEventListener('stop', () => {
+    window.clearTimeout(capture.segmentTimer);
+    if (active !== capture || capture.controller.signal.aborted) return;
+    const blob = new Blob(chunks, { type: recorder.mimeType || mimeType || 'application/octet-stream' });
+    capture.uploadQueue = capture.uploadQueue
+      .then(() => transcribeSegment(capture, blob))
+      .catch(error => {
+        if (capture.controller.signal.aborted || active !== capture) return;
+        capture.onEvent({ kind: 'error', text: error instanceof Error ? error.message : 'Audio transcription failed.' });
+      });
+    startSegment(capture);
+  });
+  recorder.start();
+  capture.segmentTimer = window.setTimeout(() => {
+    if (recorder.state === 'recording') recorder.stop();
+  }, 4_000);
+}
+
 export async function startRoomCapture(onEvent: (event: RealtimeEvent) => void, token = '') {
   if (active) return;
+  if (typeof MediaRecorder === 'undefined') throw new Error('This browser does not support microphone transcription.');
   onEvent({ kind: 'status', status: 'connecting' });
-
   const stream = await navigator.mediaDevices.getUserMedia({
     audio: { echoCancellation: false, noiseSuppression: false, autoGainControl: true, channelCount: 1 },
     video: false
   });
   const track = stream.getAudioTracks()[0];
-  if (!track) throw new Error('No microphone audio track was provided by the browser.');
-
-  const peer = new RTCPeerConnection();
-  const sender = peer.addTrack(track, stream);
-  const channel = peer.createDataChannel('oai-events');
-  const meter = await createMeter(stream, onEvent);
-
-  const cleanupFailedStart = async () => {
-    window.clearInterval(meter.timer);
+  if (!track) {
     stream.getTracks().forEach(item => item.stop());
-    peer.close();
-    await meter.context?.close();
-  };
-
-  try {
-    channel.addEventListener('message', message => {
-      try {
-        const event = messageToEvent(String(message.data));
-        if (event) onEvent(event);
-      } catch { onEvent({ kind: 'error', text: 'LiveCue received an unreadable transcription event.' }); }
-    });
-
-    const offer = await peer.createOffer();
-    await peer.setLocalDescription(offer);
-    const response = await fetch('/api/realtime-session', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/sdp', Authorization: `Bearer ${token}` },
-      body: offer.sdp
-    });
-    const answer = await response.text();
-    if (!response.ok) {
-      let message = 'Could not start the mobile transcription connection.';
-      try { message = JSON.parse(answer).error || message; } catch { /* Use the safe fallback. */ }
-      throw new Error(message);
-    }
-    await peer.setRemoteDescription({ type: 'answer', sdp: answer });
-    await new Promise<void>((resolve, reject) => {
-      if (channel.readyState === 'open') return resolve();
-      const timeout = window.setTimeout(() => reject(new Error('The mobile transcription connection timed out.')), 12_000);
-      channel.addEventListener('open', () => { window.clearTimeout(timeout); resolve(); }, { once: true });
-      channel.addEventListener('error', () => { window.clearTimeout(timeout); reject(new Error('The mobile transcription connection failed.')); }, { once: true });
-    });
-  } catch (error) {
-    await cleanupFailedStart();
-    throw error;
+    throw new Error('No microphone audio track was provided by the browser.');
   }
-
-  const commitTimer = window.setInterval(() => {
-    if (channel.readyState === 'open' && track.readyState === 'live' && track.enabled) {
-      channel.send(JSON.stringify({ type: 'input_audio_buffer.commit' }));
-    }
-  }, 2_500);
-
-  active = { stream, peer, channel, meterContext: meter.context, meterTimer: meter.timer, commitTimer };
-  const fail = (text: string) => {
-    if (!active || active.peer !== peer) return;
-    onEvent({ kind: 'error', text });
+  const meter = await createMeter(stream, onEvent);
+  const capture: ActiveCapture = {
+    stream, recorder: null, meterContext: meter.context, meterTimer: meter.timer, segmentTimer: 0,
+    controller: new AbortController(), uploadQueue: Promise.resolve(), token, onEvent
+  };
+  active = capture;
+  track.addEventListener('ended', () => {
+    if (active !== capture) return;
+    onEvent({ kind: 'error', text: 'Safari stopped the microphone. Press Start listening to reconnect.' });
     onEvent({ kind: 'status', status: 'disconnected' });
     void stopRoomCapture();
-  };
-  track.addEventListener('ended', () => fail('Safari stopped the microphone. Press Start listening to reconnect.'));
-  peer.addEventListener('connectionstatechange', () => {
-    if (peer.connectionState === 'failed' || peer.connectionState === 'closed') fail('The live transcription connection ended. Press Start listening to reconnect.');
   });
-  channel.addEventListener('close', () => fail('The live transcription channel ended. Press Start listening to reconnect.'));
-
-  // Keep a reference to the sender: Safari starts transmitting as soon as the remote SDP is applied.
-  void sender;
+  try { startSegment(capture); }
+  catch (error) { await stopRoomCapture(); throw error; }
   onEvent({ kind: 'status', status: 'listening' });
 }
 
@@ -146,11 +135,11 @@ export async function stopRoomCapture() {
   if (!active) return;
   const capture = active;
   active = null;
-  window.clearInterval(capture.commitTimer);
+  capture.controller.abort();
+  window.clearTimeout(capture.segmentTimer);
   window.clearInterval(capture.meterTimer);
+  if (capture.recorder?.state === 'recording') capture.recorder.stop();
   capture.stream.getTracks().forEach(track => track.stop());
-  capture.channel.close();
-  capture.peer.close();
   await capture.meterContext?.close();
 }
 

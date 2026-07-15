@@ -2,13 +2,13 @@
 
 LiveCue Web is a silent real-time meeting copilot. This first browser version listens through one microphone to both the user and meeting audio playing from the laptop loudspeaker. It transcribes the mixed room audio, detects completed questions, retrieves relevant evidence and displays short grounded response cues.
 
-It never speaks aloud and does not record audio.
+It never speaks aloud and does not permanently record or save audio.
 
 ## What works
 
 * Premium responsive browser interface.
 * Single microphone room and loudspeaker capture.
-* Live partial and completed transcripts.
+* Near-live completed transcripts from short in-memory microphone segments.
 * Server voice activity detection.
 * Automatic and manual question analysis.
 * Duplicate question suppression.
@@ -132,7 +132,7 @@ Privacy behaviour:
 * The rolling transcript remains in browser memory unless the user explicitly downloads it.
 * Uploaded documents are extracted in the browser and reduced to an in-memory evidence pack.
 * Evidence pack saving is an explicit download.
-* Full stop immediately stops every microphone track, closes the audio context and closes the WebSocket.
+* Full stop immediately stops every microphone track, closes the audio context and cancels pending transcription requests.
 * Closing or refreshing the page ends capture.
 
 ## Troubleshooting
@@ -155,11 +155,11 @@ Create `.env`, add `OPENAI_API_KEY`, and restart both development processes. The
 
 ### Simulation works but live audio does not
 
-Simulation has a local deterministic fallback. Live transcription requires a valid server key and network access to the OpenAI Realtime API.
+Simulation has a local deterministic fallback. Live transcription requires a valid server key and network access to the OpenAI Audio API.
 
 ## OpenAI integration
 
-The server opens `wss://api.openai.com/v1/realtime?intent=transcription`, creates a session with `type: transcription`, and sets `gpt-realtime-whisper` only at `audio.input.transcription.model`. This follows the current [Realtime transcription guide](https://developers.openai.com/api/docs/guides/realtime-transcription) and [Realtime WebSocket guide](https://developers.openai.com/api/docs/guides/realtime-websocket).
+The browser creates self-contained four-second microphone segments in memory. The server sends each segment to the Audio Transcriptions API with `gpt-4o-transcribe`; the segment is immediately discarded and is never written to disk. This follows the current [speech-to-text guide](https://developers.openai.com/api/docs/guides/speech-to-text). The server also retains the dedicated Realtime transcription integration for the next streaming transport iteration.
 
 Cue generation uses the Responses API with strict structured output so the interface receives a predictable cue object.
 
