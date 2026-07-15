@@ -93,16 +93,40 @@ export async function startRoomCapture(onEvent: (event: RealtimeEvent) => void, 
   const mute = context.createGain();
   mute.gain.value = 0;
   let lastLevelAt = 0;
+  let speechStartedAt = 0;
+  let lastSpeechAt = 0;
+  let preRoll: string[] = [];
   processor.onaudioprocess = event => {
     const audio = resampleTo24k(event.inputBuffer.getChannelData(0), event.inputBuffer.sampleRate);
     const now = performance.now();
+    const rms = Math.sqrt(audio.reduce((sum, sample) => sum + sample * sample, 0) / audio.length);
     if (now - lastLevelAt > 120) {
-      const rms = Math.sqrt(audio.reduce((sum, sample) => sum + sample * sample, 0) / audio.length);
       onEvent({ kind: 'level', value: Math.min(1, rms * 8) });
       lastLevelAt = now;
     }
     if (socket.readyState === WebSocket.OPEN) {
-      socket.send(JSON.stringify({ type: 'audio', audio: pcm16Base64(audio) }));
+      const encoded = pcm16Base64(audio);
+      if (rms > .008) {
+        if (!speechStartedAt) {
+          speechStartedAt = now;
+          preRoll.forEach(chunk => socket.send(JSON.stringify({ type: 'audio', audio: chunk })));
+          preRoll = [];
+        }
+        lastSpeechAt = now;
+      }
+      if (!speechStartedAt) {
+        preRoll = [...preRoll.slice(-3), encoded];
+        return;
+      }
+      socket.send(JSON.stringify({ type: 'audio', audio: encoded }));
+      const finishedSpeaking = speechStartedAt && lastSpeechAt && now - lastSpeechAt > 700;
+      const longUtterance = speechStartedAt && now - speechStartedAt > 12_000;
+      if (finishedSpeaking || longUtterance) {
+        socket.send(JSON.stringify({ type: 'commit' }));
+        speechStartedAt = 0;
+        lastSpeechAt = 0;
+        preRoll = [];
+      }
     }
   };
   source.connect(processor);

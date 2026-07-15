@@ -125,7 +125,7 @@ realtimeServer.on('connection', browser => {
       session: { type: 'transcription', audio: { input: {
         format: { type: 'audio/pcm', rate: 24_000 },
         transcription: { model: 'gpt-realtime-whisper', language: 'en', delay: 'low' },
-        turn_detection: { type: 'server_vad', threshold: 0.5, prefix_padding_ms: 300, silence_duration_ms: 700 }
+        turn_detection: null
       } } }
     }));
     if (browser.readyState === WebSocket.OPEN) browser.send(JSON.stringify({ kind: 'status', status: 'connected' }));
@@ -145,6 +145,7 @@ realtimeServer.on('connection', browser => {
     try {
       const event = JSON.parse(raw.toString());
       if (event.type === 'audio' && typeof event.audio === 'string' && event.audio.length < 1_000_000 && upstream.readyState === WebSocket.OPEN) upstream.send(JSON.stringify({ type: 'input_audio_buffer.append', audio: event.audio }));
+      if (event.type === 'commit' && upstream.readyState === WebSocket.OPEN) upstream.send(JSON.stringify({ type: 'input_audio_buffer.commit' }));
       if (event.type === 'stop') upstream.close();
     } catch { /* Ignore malformed browser events. */ }
   });

@@ -7,6 +7,8 @@ describe('Realtime transcription configuration', () => {
     expect(server).toContain('wss://api.openai.com/v1/realtime?intent=transcription');
     expect(server).toContain("type: 'transcription'");
     expect(server).toContain("model: 'gpt-realtime-whisper'");
+    expect(server).toContain('turn_detection: null');
+    expect(server).toContain("type: 'input_audio_buffer.commit'");
     expect(server).not.toContain('v1/realtime?model=');
   });
 });
