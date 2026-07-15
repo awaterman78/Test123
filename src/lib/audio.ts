@@ -1,5 +1,5 @@
 export type RealtimeEvent =
-  | { kind: 'status'; status: string }
+  | { kind: 'status'; status: 'connecting' | 'listening' | 'disconnected' }
   | { kind: 'delta'; itemId: string; text: string }
   | { kind: 'completed'; itemId: string; text: string }
   | { kind: 'level'; value: number }
@@ -7,153 +7,151 @@ export type RealtimeEvent =
 
 interface ActiveCapture {
   stream: MediaStream;
-  context: AudioContext;
-  processor: ScriptProcessorNode;
-  source: MediaStreamAudioSourceNode;
-  socket: WebSocket;
+  peer: RTCPeerConnection;
+  channel: RTCDataChannel;
+  meterContext: AudioContext | null;
+  meterTimer: number;
+  commitTimer: number;
 }
 
 let active: ActiveCapture | null = null;
 
-function pcm16Base64(float32: Float32Array) {
-  const buffer = new ArrayBuffer(float32.length * 2);
-  const view = new DataView(buffer);
-  for (let i = 0; i < float32.length; i++) {
-    const sample = Math.max(-1, Math.min(1, float32[i]));
-    view.setInt16(i * 2, sample < 0 ? sample * 0x8000 : sample * 0x7fff, true);
+function messageToEvent(raw: string): RealtimeEvent | null {
+  const event = JSON.parse(raw);
+  if (event.type === 'conversation.item.input_audio_transcription.delta') {
+    return { kind: 'delta', itemId: event.item_id, text: event.delta };
   }
-  const bytes = new Uint8Array(buffer);
-  let binary = '';
-  for (let i = 0; i < bytes.length; i += 32_768) binary += String.fromCharCode(...bytes.subarray(i, i + 32_768));
-  return btoa(binary);
+  if (event.type === 'conversation.item.input_audio_transcription.completed') {
+    return { kind: 'completed', itemId: event.item_id, text: event.transcript };
+  }
+  if (event.type === 'error') {
+    return { kind: 'error', text: event.error?.message ?? 'Realtime transcription failed.' };
+  }
+  return null;
 }
 
-export function resampleTo24k(input: Float32Array, inputRate: number) {
-  if (inputRate === 24_000) return new Float32Array(input);
-  const ratio = inputRate / 24_000;
-  const length = Math.max(1, Math.floor(input.length / ratio));
-  const output = new Float32Array(length);
-  if (ratio > 1) {
-    for (let index = 0; index < length; index++) {
-      const start = Math.floor(index * ratio);
-      const end = Math.max(start + 1, Math.min(input.length, Math.floor((index + 1) * ratio)));
-      let sum = 0;
-      for (let source = start; source < end; source++) sum += input[source];
-      output[index] = sum / (end - start);
-    }
-  } else {
-    for (let index = 0; index < length; index++) {
-      const position = index * ratio;
-      const left = Math.floor(position);
-      const right = Math.min(input.length - 1, left + 1);
-      const mix = position - left;
-      output[index] = input[left] * (1 - mix) + input[right] * mix;
-    }
+async function createMeter(stream: MediaStream, onEvent: (event: RealtimeEvent) => void) {
+  try {
+    const context = new AudioContext();
+    const analyser = context.createAnalyser();
+    analyser.fftSize = 512;
+    const source = context.createMediaStreamSource(stream);
+    const mute = context.createGain();
+    mute.gain.value = 0;
+    source.connect(analyser);
+    analyser.connect(mute);
+    mute.connect(context.destination);
+    await context.resume();
+    const samples = new Float32Array(analyser.fftSize);
+    const timer = window.setInterval(() => {
+      analyser.getFloatTimeDomainData(samples);
+      const rms = Math.sqrt(samples.reduce((sum, sample) => sum + sample * sample, 0) / samples.length);
+      onEvent({ kind: 'level', value: Math.min(1, rms * 8) });
+    }, 120);
+    return { context, timer };
+  } catch {
+    return { context: null, timer: 0 };
   }
-  return output;
 }
 
 export async function startRoomCapture(onEvent: (event: RealtimeEvent) => void, token = '') {
   if (active) return;
-  const context = new AudioContext();
-  await context.resume();
-  let stream: MediaStream;
-  try {
-    stream = await navigator.mediaDevices.getUserMedia({
-      audio: { echoCancellation: false, noiseSuppression: false, autoGainControl: true, channelCount: 1 },
-      video: false
-    });
-  } catch (error) {
-    await context.close();
-    throw error;
-  }
-  const protocol = location.protocol === 'https:' ? 'wss:' : 'ws:';
-  const socket = new WebSocket(`${protocol}//${location.host}/realtime?token=${encodeURIComponent(token)}`);
-  try {
-    await new Promise<void>((resolve, reject) => {
-      const timeout = window.setTimeout(() => reject(new Error('The transcription connection timed out.')), 10_000);
-      socket.addEventListener('open', () => { window.clearTimeout(timeout); resolve(); }, { once: true });
-      socket.addEventListener('error', () => { window.clearTimeout(timeout); reject(new Error('Could not connect to the transcription service.')); }, { once: true });
-    });
-  } catch (error) {
-    stream.getTracks().forEach(track => track.stop());
-    socket.close();
-    await context.close();
-    throw error;
-  }
-  socket.addEventListener('message', event => {
-    try { onEvent(JSON.parse(String(event.data)) as RealtimeEvent); }
-    catch { onEvent({ kind: 'error', text: 'LiveCue received an unreadable transcription event.' }); }
-  });
-  socket.addEventListener('close', () => onEvent({ kind: 'status', status: 'disconnected' }));
+  onEvent({ kind: 'status', status: 'connecting' });
 
-  const source = context.createMediaStreamSource(stream);
-  if (context.state === 'suspended') await context.resume();
-  const processor = context.createScriptProcessor(4096, 1, 1);
-  const mute = context.createGain();
-  mute.gain.value = 0;
-  let lastLevelAt = 0;
-  let speechStartedAt = 0;
-  let lastSpeechAt = 0;
-  let preRoll: string[] = [];
-  processor.onaudioprocess = event => {
-    const audio = resampleTo24k(event.inputBuffer.getChannelData(0), event.inputBuffer.sampleRate);
-    const now = performance.now();
-    const rms = Math.sqrt(audio.reduce((sum, sample) => sum + sample * sample, 0) / audio.length);
-    if (now - lastLevelAt > 120) {
-      onEvent({ kind: 'level', value: Math.min(1, rms * 8) });
-      lastLevelAt = now;
-    }
-    if (socket.readyState === WebSocket.OPEN) {
-      const encoded = pcm16Base64(audio);
-      if (rms > .008) {
-        if (!speechStartedAt) {
-          speechStartedAt = now;
-          preRoll.forEach(chunk => socket.send(JSON.stringify({ type: 'audio', audio: chunk })));
-          preRoll = [];
-        }
-        lastSpeechAt = now;
-      }
-      if (!speechStartedAt) {
-        preRoll = [...preRoll.slice(-3), encoded];
-        return;
-      }
-      socket.send(JSON.stringify({ type: 'audio', audio: encoded }));
-      const finishedSpeaking = speechStartedAt && lastSpeechAt && now - lastSpeechAt > 700;
-      const longUtterance = speechStartedAt && now - speechStartedAt > 12_000;
-      if (finishedSpeaking || longUtterance) {
-        socket.send(JSON.stringify({ type: 'commit' }));
-        speechStartedAt = 0;
-        lastSpeechAt = 0;
-        preRoll = [];
-      }
-    }
+  const stream = await navigator.mediaDevices.getUserMedia({
+    audio: { echoCancellation: false, noiseSuppression: false, autoGainControl: true, channelCount: 1 },
+    video: false
+  });
+  const track = stream.getAudioTracks()[0];
+  if (!track) throw new Error('No microphone audio track was provided by the browser.');
+
+  const peer = new RTCPeerConnection();
+  const sender = peer.addTrack(track, stream);
+  const channel = peer.createDataChannel('oai-events');
+  const meter = await createMeter(stream, onEvent);
+
+  const cleanupFailedStart = async () => {
+    window.clearInterval(meter.timer);
+    stream.getTracks().forEach(item => item.stop());
+    peer.close();
+    await meter.context?.close();
   };
-  source.connect(processor);
-  processor.connect(mute);
-  mute.connect(context.destination);
-  active = { stream, context, processor, source, socket };
+
+  try {
+    channel.addEventListener('message', message => {
+      try {
+        const event = messageToEvent(String(message.data));
+        if (event) onEvent(event);
+      } catch { onEvent({ kind: 'error', text: 'LiveCue received an unreadable transcription event.' }); }
+    });
+
+    const offer = await peer.createOffer();
+    await peer.setLocalDescription(offer);
+    const response = await fetch('/api/realtime-session', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/sdp', Authorization: `Bearer ${token}` },
+      body: offer.sdp
+    });
+    const answer = await response.text();
+    if (!response.ok) {
+      let message = 'Could not start the mobile transcription connection.';
+      try { message = JSON.parse(answer).error || message; } catch { /* Use the safe fallback. */ }
+      throw new Error(message);
+    }
+    await peer.setRemoteDescription({ type: 'answer', sdp: answer });
+    await new Promise<void>((resolve, reject) => {
+      if (channel.readyState === 'open') return resolve();
+      const timeout = window.setTimeout(() => reject(new Error('The mobile transcription connection timed out.')), 12_000);
+      channel.addEventListener('open', () => { window.clearTimeout(timeout); resolve(); }, { once: true });
+      channel.addEventListener('error', () => { window.clearTimeout(timeout); reject(new Error('The mobile transcription connection failed.')); }, { once: true });
+    });
+  } catch (error) {
+    await cleanupFailedStart();
+    throw error;
+  }
+
+  const commitTimer = window.setInterval(() => {
+    if (channel.readyState === 'open' && track.readyState === 'live' && track.enabled) {
+      channel.send(JSON.stringify({ type: 'input_audio_buffer.commit' }));
+    }
+  }, 2_500);
+
+  active = { stream, peer, channel, meterContext: meter.context, meterTimer: meter.timer, commitTimer };
+  const fail = (text: string) => {
+    if (!active || active.peer !== peer) return;
+    onEvent({ kind: 'error', text });
+    onEvent({ kind: 'status', status: 'disconnected' });
+    void stopRoomCapture();
+  };
+  track.addEventListener('ended', () => fail('Safari stopped the microphone. Press Start listening to reconnect.'));
+  peer.addEventListener('connectionstatechange', () => {
+    if (peer.connectionState === 'failed' || peer.connectionState === 'closed') fail('The live transcription connection ended. Press Start listening to reconnect.');
+  });
+  channel.addEventListener('close', () => fail('The live transcription channel ended. Press Start listening to reconnect.'));
+
+  // Keep a reference to the sender: Safari starts transmitting as soon as the remote SDP is applied.
+  void sender;
   onEvent({ kind: 'status', status: 'listening' });
 }
 
 export async function pauseRoomCapture() {
-  await active?.context.suspend();
+  active?.stream.getAudioTracks().forEach(track => { track.enabled = false; });
 }
 
 export async function resumeRoomCapture() {
-  await active?.context.resume();
+  active?.stream.getAudioTracks().forEach(track => { track.enabled = true; });
 }
 
 export async function stopRoomCapture() {
   if (!active) return;
   const capture = active;
   active = null;
-  capture.processor.disconnect();
-  capture.source.disconnect();
+  window.clearInterval(capture.commitTimer);
+  window.clearInterval(capture.meterTimer);
   capture.stream.getTracks().forEach(track => track.stop());
-  if (capture.socket.readyState === WebSocket.OPEN) capture.socket.send(JSON.stringify({ type: 'stop' }));
-  capture.socket.close();
-  await capture.context.close();
+  capture.channel.close();
+  capture.peer.close();
+  await capture.meterContext?.close();
 }
 
 export function isRoomCaptureActive() { return Boolean(active); }

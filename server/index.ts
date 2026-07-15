@@ -15,6 +15,7 @@ app.disable('x-powered-by');
 
 const accessCode = process.env.LIVECUE_ACCESS_CODE?.trim() || '';
 const loginAttempts = new Map<string, { count: number; resetAt: number }>();
+const safetyId = crypto.createHash('sha256').update('livecue-web').digest('hex');
 
 function safeEqual(left: string, right: string) {
   const leftHash = crypto.createHash('sha256').update(left).digest();
@@ -83,6 +84,36 @@ app.post('/api/auth', (request, response) => {
   response.json({ token: issueSessionToken() });
 });
 
+app.post('/api/realtime-session', express.text({ type: 'application/sdp', limit: '256kb' }), requireSession, async (request, response) => {
+  if (!process.env.OPENAI_API_KEY) return response.status(503).json({ error: 'The server has no OpenAI API key.' });
+  if (typeof request.body !== 'string' || !request.body.startsWith('v=')) return response.status(400).json({ error: 'The browser supplied an invalid audio connection offer.' });
+  const form = new FormData();
+  form.set('sdp', request.body);
+  form.set('session', JSON.stringify({
+    type: 'transcription',
+    audio: { input: {
+      transcription: { model: 'gpt-realtime-whisper', language: 'en', delay: 'low' },
+      turn_detection: null
+    } }
+  }));
+  try {
+    const upstream = await fetch('https://api.openai.com/v1/realtime/calls', {
+      method: 'POST',
+      headers: { Authorization: `Bearer ${process.env.OPENAI_API_KEY}`, 'OpenAI-Safety-Identifier': safetyId },
+      body: form
+    });
+    const body = await upstream.text();
+    if (!upstream.ok) {
+      let message = 'OpenAI rejected the mobile transcription session.';
+      try { message = JSON.parse(body).error?.message || message; } catch { /* Use the safe fallback. */ }
+      return response.status(upstream.status).json({ error: message });
+    }
+    response.type('application/sdp').send(body);
+  } catch {
+    response.status(502).json({ error: 'Could not reach the transcription service.' });
+  }
+});
+
 app.post('/api/cues', requireSession, async (request, response) => {
   try {
     const input = requestSchema.parse(request.body);
@@ -115,7 +146,6 @@ realtimeServer.on('connection', browser => {
     browser.send(JSON.stringify({ kind: 'error', text: 'The server has no OpenAI API key. Add it to .env and restart LiveCue.' }));
     return browser.close();
   }
-  const safetyId = crypto.createHash('sha256').update('livecue-web').digest('hex');
   const upstream = new WebSocket('wss://api.openai.com/v1/realtime?intent=transcription', {
     headers: { Authorization: `Bearer ${process.env.OPENAI_API_KEY}`, 'OpenAI-Safety-Identifier': safetyId }
   });

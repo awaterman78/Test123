@@ -215,7 +215,8 @@ kbd { min-width: 22px; padding: 3px 5px; border: 1px solid #d4dcda; border-botto
   .transcript-error { margin-left: 14px; margin-right: 14px; }
   .source-notice { align-items: flex-start; }
   .mic-signal { margin-top: 2px; }
-  .mic-signal small { display: none; }
+  .mic-signal { height: 36px; flex-wrap: wrap; justify-content: center; max-width: 54px; }
+  .mic-signal small { flex-basis: 100%; margin: 0; text-align: center; }
   .transcript-list { padding: 18px; }
   .audio-route { flex-wrap: wrap; justify-content: center; }
   .bridge-grid, .meeting-extras { grid-template-columns: 1fr; }

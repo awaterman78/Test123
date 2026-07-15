@@ -71,6 +71,12 @@ export default function App() {
 
   const handleRealtime = useCallback((event: RealtimeEvent) => {
     if (event.kind === 'error') return setError(event.text);
+    if (event.kind === 'status') {
+      if (event.status === 'disconnected') {
+        setListening(false); setPaused(false); setMicLevel(0);
+      }
+      return;
+    }
     if (event.kind === 'level') return setMicLevel(event.value);
     if (event.kind === 'delta') {
       partials.current[event.itemId] = (partials.current[event.itemId] ?? '') + event.text;
@@ -150,7 +156,7 @@ export default function App() {
       <section className="pane transcript-pane">
         <PaneHeading eyebrow="LIVE TRANSCRIPT" title={listening ? paused ? 'Listening paused' : 'Listening to the room' : 'Ready when you are'} aside={<div className={`capture-badge ${listening && !paused ? 'live' : ''}`}><i />{listening && !paused ? 'CAPTURING' : 'OFF'}</div>} />
         {error && <div className="error-banner transcript-error"><X onClick={() => setError('')} /><span>{error}</span></div>}
-        <div className="source-notice"><Headphones /><div className="source-copy"><strong>Speaker listening mode</strong><span>LiveCue hears your voice and laptop loudspeaker together through one microphone.</span></div>{listening && <div className="mic-signal" aria-label={micLevel > .025 ? 'Microphone is hearing audio' : 'Microphone is listening'}>{[.55, .8, 1, .72, .48].map((weight, index) => <i key={index} style={{ transform: `scaleY(${Math.max(.12, Math.min(1, micLevel * 3.2 * weight + .12))})` }} />)}<small>{micLevel > .025 ? 'Hearing audio' : 'Listening…'}</small></div>}</div>
+        <div className="source-notice"><Headphones /><div className="source-copy"><strong>Speaker listening mode</strong><span>LiveCue hears your voice and laptop loudspeaker together through one microphone.</span></div>{listening && <div className="mic-signal" aria-label={micLevel > .025 ? 'Microphone is hearing audio' : 'Microphone is connected'}>{[.55, .8, 1, .72, .48].map((weight, index) => <i key={index} style={{ transform: `scaleY(${Math.max(.12, Math.min(1, micLevel * 3.2 * weight + .12))})` }} />)}<small>{micLevel > .025 ? 'Hearing audio' : 'Mic connected'}</small></div>}</div>
         <div className="transcript-list">
           {transcript.length ? transcript.map(item => <article className="utterance" key={item.id}><div className="avatar">RM</div><div><div className="speaker">Room audio <time>{new Date(item.at).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}</time></div><p>{item.text}{item.partial && <span className="cursor" />}</p></div></article>) : <div className="empty-state"><div className="listening-orb"><Mic /></div><h3>Your conversation will appear here</h3><p>Place the meeting through the laptop speakers. LiveCue will listen through the selected microphone without recording the audio.</p><div className="audio-route"><Volume2 /><span>Laptop loudspeaker</span><ChevronRight /><Mic /><span>Microphone</span><ChevronRight /><Sparkles /><span>LiveCue</span></div></div>}
         </div>
